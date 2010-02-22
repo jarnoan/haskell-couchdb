@@ -75,10 +75,9 @@ reopenConnection = CouchMonad $ \conn -> do
   writeIORef (ccConn conn) connection
   return ((), conn)
 
-makeHeaders bodyLen =
+makeHeaders =
   [ Header HdrContentType "application/json"
   , Header HdrConnection "keep-alive"
-  , Header HdrContentLength (show bodyLen)
   ]
 
 -- |Send a request to the database.  If the connection is closed, it is
@@ -92,7 +91,7 @@ request :: String -- ^path of the request
        -> CouchMonad (Response String)
 request path query method headers body = do
   url <- makeURL path query
-  let allHeaders = (makeHeaders (length body)) ++ headers 
+  let allHeaders = makeHeaders ++ headers 
   conn <- getConn
   let req = Request url method allHeaders body
   let retry 0 = do

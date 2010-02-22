@@ -17,6 +17,9 @@ module Database.CouchDB.Unsafe
   , getAndUpdateDoc
   , getAllDocIds
   , getAllDocs
+  -- * Attachments
+  -- $attachments
+  , getAttachment
   -- * Views
   -- $views
   , CouchView (..)
@@ -231,6 +234,23 @@ getAllDocIds db = do
       let (JSArray rows) = fromJust $ lookup "rows" result
       return $ mapMaybe allDocRow rows
     otherwise -> error (show response)
+
+--
+-- $attachments
+-- Getting attachments
+--
+
+getAttachment :: String -- ^database name
+              -> String -- ^document name
+              -> String -- ^attachment name
+              -- |Returns 'Nothing' if the attachment does not exist
+              -> CouchMonad (Maybe String)
+getAttachment dbName docName attachmentName = do
+  r <- request' (dbName ++ "/" ++ docName ++ "/" ++ attachmentName) GET
+  case rspCode r of
+    (2,0,0) -> return (Just $ rspBody r)
+    (4,0,4) -> return Nothing -- attachment does not exist
+    code -> fail $ "getDocPrim: " ++ show code ++ " error"
 
 --
 -- $views

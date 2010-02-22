@@ -32,6 +32,11 @@ module Database.CouchDB
   , getAllDocs
   , getAndUpdateDoc
   , getAllDocIds
+  -- * Attachments
+  -- $attachments
+  , Attachment
+  , attachment
+  , getAttachment
   -- * Views
   -- $views
   , CouchView (..)
@@ -136,6 +141,50 @@ isDocString :: String -> Bool
 isDocString [] = False
 isDocString (first:rest) = isFirstDocChar first && and (map isDocChar rest)
 
+-- |Attachment name.
+data Attachment = Attachment { unAttachment :: JSString }
+  deriving (Eq, Ord)
+
+instance Show Attachment where
+  show (Attachment s) = fromJSString s
+
+instance JSON Attachment where
+  readJSON (JSString s) | isAttachmentString (fromJSString s) = return (Attachment s)
+  readJSON _ = fail "readJSON: not a valid document name"
+
+  showJSON (Attachment s) = showJSON s
+
+instance Read Attachment where
+  readsPrec _ str = maybeToList (parseFirst str) where
+    parseFirst "" = Nothing
+    parseFirst (ch:rest) 
+      | isFirstAttachmentChar ch =
+          let (chs',rest') = parseRest rest
+            in Just (Attachment $ toJSString $ ch:chs',rest)
+      | otherwise = Nothing
+    parseRest "" = ("","")
+    parseRest (ch:rest) 
+      | isAttachmentChar ch =
+          let (chs',rest') = parseRest rest
+            in (ch:chs',rest')
+      | otherwise =
+          ("",ch:rest)
+
+isFirstAttachmentChar = isFirstDocChar
+
+isAttachmentChar c = isDocChar c || c == '/'
+
+isAttachmentString :: String -> Bool
+isAttachmentString [] = False
+isAttachmentString (first:rest) = isFirstAttachmentChar first && and (map isAttachmentChar rest)
+
+-- |Returns a safe attachment name.  Signals an error if the name is
+-- invalid.
+attachment :: String -> Attachment
+attachment attName = case isDocString attName of
+  True -> Attachment (toJSString attName)
+  False -> error $ "attachment : invalid attName (" ++ attName ++ ")"
+  
 
 
 -- |Creates a new database.  Throws an exception if the database already
@@ -248,6 +297,19 @@ getAllDocIds db = do
   return (map Doc allIds)
 
 --
+-- $attachments
+-- Getting attachments
+--
+
+getAttachment :: DB -- ^database name
+              -> Doc -- ^document name
+              -> Attachment -- ^attachment name
+              -- |Returns 'Nothing' if the attachment does not exist
+              -> CouchMonad (Maybe String)
+getAttachment db docId attachment =
+  U.getAttachment (show db) (show docId) (show attachment)
+  
+--
 -- $views
 -- Creating and querying views
 --
@@ -279,3 +341,4 @@ queryViewKeys :: DB  -- ^database
 queryViewKeys db viewSet view args = do
   rows <- U.queryViewKeys (show db) (show viewSet) (show view) args
   return $ map (Doc . toJSString) rows
+
