@@ -250,7 +250,7 @@ getAttachment dbName docName attachmentName = do
   case rspCode r of
     (2,0,0) -> return (Just $ rspBody r)
     (4,0,4) -> return Nothing -- attachment does not exist
-    code -> fail $ "getDocPrim: " ++ show code ++ " error"
+    code -> fail $ "getAttachment: " ++ show code ++ " error"
 
 --
 -- $views
