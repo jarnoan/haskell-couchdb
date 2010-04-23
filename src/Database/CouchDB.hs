@@ -2,6 +2,7 @@
 module Database.CouchDB 
   ( -- * Initialization
     CouchMonad
+  , MonadCouch
   , runCouchDB
   , runCouchDB'
    -- * Explicit Connections
@@ -52,10 +53,90 @@ import Data.Maybe (fromJust,mapMaybe,maybeToList)
 import Text.JSON
 import Data.List (elem)
 import Data.Maybe (mapMaybe)
+import Data.String (IsString, fromString)
 
 import Database.CouchDB.Unsafe (CouchView (..))
 import qualified Data.List as L
 import qualified Database.CouchDB.Unsafe as U
+
+class MonadCouch mc where
+  -- |Creates a new database.  Throws an exception if the database already
+  -- exists. 
+  createDB :: String -> mc ()
+  dropDB :: String -> mc Bool -- ^False if the database does not exist
+  newNamedDoc :: (JSON a)
+              => DB -- ^database name
+              -> Doc -- ^document name
+              -> a -- ^document body
+              -> mc (Either String Rev)
+              -- ^Returns 'Left' on a conflict.
+  updateDoc :: (JSON a)
+            => DB -- ^database
+            -> (Doc,Rev) -- ^document and revision
+            -> a -- ^ new value
+            -> mc (Maybe (Doc,Rev)) 
+  -- |Delete a doc by document identifier (revision number not needed).  This
+  -- operation first retreives the document to get its revision number.  It fails
+  -- if the document doesn't exist or there is a conflict.
+  forceDeleteDoc :: DB -- ^ database
+                 -> Doc -- ^ document identifier
+                 -> mc Bool
+  deleteDoc :: DB  -- ^database
+            -> (Doc,Rev)
+            -> mc Bool
+  newDoc :: (JSON a)
+         => DB -- ^database name
+        -> a       -- ^document body
+        -> mc (Doc,Rev) -- ^ id and rev of new document
+  getDoc :: (JSON a)
+         => DB -- ^database name
+         -> Doc -- ^document name
+         -> mc (Maybe (Doc,Rev,a)) -- ^'Nothing' if the 
+  getAllDocs :: JSON a
+             => DB
+            -> [(String, JSValue)] -- ^query parameters
+            -> mc [(Doc, a)]
+  -- |Gets a document as a raw JSON value.  Returns the document id,
+  -- revision and value as a 'JSObject'.  These fields are queried lazily,
+  -- and may fail later if the response from the server is malformed.
+  getDocPrim :: DB -- ^database name
+             -> Doc -- ^document name
+             -> mc (Maybe (Doc,Rev,[(String,JSValue)]))
+             -- ^'Nothing' if the document does not exist.
+  getDocRaw :: DB -> Doc -> mc (Maybe String)
+  getAndUpdateDoc :: (JSON a)
+                  => DB -- ^database
+                  -> Doc -- ^document name
+                  -> (a -> IO a) -- ^update function
+                  -> mc (Maybe Rev) -- ^If the update succeeds,
+                                            -- return the revision number
+                                            -- of the result.
+  getAllDocIds ::DB -- ^database name
+               -> mc [Doc]
+  getAttachment :: DB -- ^database name
+                -> Doc -- ^document name
+                -> Attachment -- ^attachment name
+                -- |Returns 'Nothing' if the attachment does not exist
+                -> mc (Maybe String)
+  newView :: String -- ^database name
+          -> String -- ^view set name
+          -> [CouchView] -- ^views
+          -> mc ()
+  queryView :: (JSON a)
+            => DB  -- ^database
+            -> Doc  -- ^design
+            -> Doc  -- ^view
+            -> [(String, JSValue)] -- ^query parameters
+            -- |Returns a list of rows.  Each row is a key, value pair.
+            -> mc [(Doc, a)]
+  -- |Like 'queryView', but only returns the keys.  Use this for key-only
+  -- views where the value is completely ignored.
+  queryViewKeys :: DB  -- ^database
+              -> Doc  -- ^design
+              -> Doc  -- ^view
+              -> [(String, JSValue)] -- ^query parameters
+              -> mc [Doc]
+
 
 -- |Database name
 data DB = DB String
@@ -71,6 +152,7 @@ instance JSON DB where
       True -> return (DB s)
 
   showJSON (DB s) = showJSON s
+
 
 
 isDBChar ch = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') 
@@ -170,6 +252,9 @@ instance Read Attachment where
       | otherwise =
           ("",ch:rest)
 
+instance IsString Attachment where
+  fromString = Attachment . toJSString
+
 isFirstAttachmentChar = isFirstDocChar
 
 isAttachmentChar c = isDocChar c || c == '/'
@@ -186,159 +271,69 @@ attachment attName = case isDocString attName of
   False -> error $ "attachment : invalid attName (" ++ attName ++ ")"
   
 
-
--- |Creates a new database.  Throws an exception if the database already
--- exists. 
-createDB :: String -> CouchMonad ()
-createDB = U.createDB
-
-dropDB :: String -> CouchMonad Bool -- ^False if the database does not exist
-dropDB = U.dropDB
-
-newNamedDoc :: (JSON a)
-            => DB -- ^database name
-            -> Doc -- ^document name
-            -> a -- ^document body
-            -> CouchMonad (Either String Rev)
-            -- ^Returns 'Left' on a conflict.
-newNamedDoc dbName docName body = do
-  r <- U.newNamedDoc (show dbName) (show docName) body
-  case r of
-    Left s -> return (Left s)
-    Right rev -> return (Right $ Rev rev)
-
-updateDoc :: (JSON a)
-          => DB -- ^database
-          -> (Doc,Rev) -- ^document and revision
-          -> a -- ^ new value
-          -> CouchMonad (Maybe (Doc,Rev)) 
-updateDoc db (doc,rev) val = do
-  r <- U.updateDoc (show db) (unDoc doc, unRev rev) val
-  case r of
-    Nothing -> return Nothing
-    Just (_,rev) -> return $ Just (doc,Rev rev)
-
-
--- |Delete a doc by document identifier (revision number not needed).  This
--- operation first retreives the document to get its revision number.  It fails
--- if the document doesn't exist or there is a conflict.
-forceDeleteDoc :: DB -- ^ database
-               -> Doc -- ^ document identifier
-               -> CouchMonad Bool
-forceDeleteDoc db doc = U.forceDeleteDoc (show db) (show doc)
-
-deleteDoc :: DB  -- ^database
-          -> (Doc,Rev)
-          -> CouchMonad Bool
-deleteDoc db (doc,rev) = U.deleteDoc (show db) (unDoc doc,unRev rev)
-
-newDoc :: (JSON a)
-       => DB -- ^database name
-      -> a       -- ^document body
-      -> CouchMonad (Doc,Rev) -- ^ id and rev of new document
-newDoc db body = do
-  (doc,rev) <- U.newDoc (show db) body
-  return (Doc doc,Rev rev)
-    
-getDoc :: (JSON a)
-       => DB -- ^database name
-       -> Doc -- ^document name
-       -> CouchMonad (Maybe (Doc,Rev,a)) -- ^'Nothing' if the 
-                                         -- doc does not exist
-getDoc db doc = do
-  r <- U.getDoc (show db) (show doc)
-  case r of
-    Nothing -> return Nothing
-    Just (_,rev,val) -> return $ Just (doc,Rev rev,val)
-
-
-getAllDocs :: JSON a
-           => DB
-          -> [(String, JSValue)] -- ^query parameters
-          -> CouchMonad [(Doc, a)]
-getAllDocs db args = do
-  rows <- U.getAllDocs (show db) args
-  return $ map (\(doc,val) -> (Doc doc,val)) rows
-
-
--- |Gets a document as a raw JSON value.  Returns the document id,
--- revision and value as a 'JSObject'.  These fields are queried lazily,
--- and may fail later if the response from the server is malformed.
-getDocPrim :: DB -- ^database name
-           -> Doc -- ^document name
-           -> CouchMonad (Maybe (Doc,Rev,[(String,JSValue)]))
-           -- ^'Nothing' if the document does not exist.
-getDocPrim db doc = do
-  r <- U.getDocPrim (show db) (show doc)
-  case r of
-    Nothing -> return Nothing
-    Just (_,rev,obj) -> return $ Just (doc,Rev rev,obj)
-
-getDocRaw :: DB -> Doc -> CouchMonad (Maybe String)
-getDocRaw db doc =  U.getDocRaw (show db) (show doc)
-
-getAndUpdateDoc :: (JSON a)
-                => DB -- ^database
-                -> Doc -- ^document name
-                -> (a -> IO a) -- ^update function
-                -> CouchMonad (Maybe Rev) -- ^If the update succeeds,
-                                          -- return the revision number
-                                          -- of the result.
-getAndUpdateDoc db docId fn = do
-  r <- U.getAndUpdateDoc (show db) (show docId) fn
-  case r of
-    Nothing -> return Nothing
-    Just rev -> return $ Just (Rev $ toJSString rev)
-
-getAllDocIds ::DB -- ^database name
-             -> CouchMonad [Doc]
-getAllDocIds db = do
-  allIds <- U.getAllDocIds (show db)
-  return (map Doc allIds)
-
---
--- $attachments
--- Getting attachments
---
-
-getAttachment :: DB -- ^database name
-              -> Doc -- ^document name
-              -> Attachment -- ^attachment name
-              -- |Returns 'Nothing' if the attachment does not exist
-              -> CouchMonad (Maybe String)
-getAttachment db docId attachment =
-  U.getAttachment (show db) (show docId) (show attachment)
+instance MonadCouch CouchMonad where
+  createDB = U.createDB
   
---
--- $views
--- Creating and querying views
---
-
-newView :: String -- ^database name
-        -> String -- ^view set name
-        -> [CouchView] -- ^views
-        -> CouchMonad ()
-newView = U.newView
-
-queryView :: (JSON a)
-          => DB  -- ^database
-          -> Doc  -- ^design
-          -> Doc  -- ^view
-          -> [(String, JSValue)] -- ^query parameters
-          -- |Returns a list of rows.  Each row is a key, value pair.
-          -> CouchMonad [(Doc, a)]
-queryView db viewSet view args = do
-  rows <- U.queryView (show db) (show viewSet) (show view) args
-  return $ map (\(doc,val) -> (Doc doc,val)) rows
-
--- |Like 'queryView', but only returns the keys.  Use this for key-only
--- views where the value is completely ignored.
-queryViewKeys :: DB  -- ^database
-            -> Doc  -- ^design
-            -> Doc  -- ^view
-            -> [(String, JSValue)] -- ^query parameters
-            -> CouchMonad [Doc]
-queryViewKeys db viewSet view args = do
-  rows <- U.queryViewKeys (show db) (show viewSet) (show view) args
-  return $ map (Doc . toJSString) rows
+  dropDB = U.dropDB
+  
+  newNamedDoc dbName docName body = do
+    r <- U.newNamedDoc (show dbName) (show docName) body
+    case r of
+      Left s -> return (Left s)
+      Right rev -> return (Right $ Rev rev)
+  
+  updateDoc db (doc,rev) val = do
+    r <- U.updateDoc (show db) (unDoc doc, unRev rev) val
+    case r of
+      Nothing -> return Nothing
+      Just (_,rev) -> return $ Just (doc,Rev rev)
+  
+  forceDeleteDoc db doc = U.forceDeleteDoc (show db) (show doc)
+  
+  deleteDoc db (doc,rev) = U.deleteDoc (show db) (unDoc doc,unRev rev)
+  
+  newDoc db body = do
+    (doc,rev) <- U.newDoc (show db) body
+    return (Doc doc,Rev rev)
+      
+  getDoc db doc = do
+    r <- U.getDoc (show db) (show doc)
+    case r of
+      Nothing -> return Nothing
+      Just (_,rev,val) -> return $ Just (doc,Rev rev,val)
+  
+  getAllDocs db args = do
+    rows <- U.getAllDocs (show db) args
+    return $ map (\(doc,val) -> (Doc doc,val)) rows
+  
+  getDocPrim db doc = do
+    r <- U.getDocPrim (show db) (show doc)
+    case r of
+      Nothing -> return Nothing
+      Just (_,rev,obj) -> return $ Just (doc,Rev rev,obj)
+  
+  getDocRaw db doc =  U.getDocRaw (show db) (show doc)
+  
+  getAndUpdateDoc db docId fn = do
+    r <- U.getAndUpdateDoc (show db) (show docId) fn
+    case r of
+      Nothing -> return Nothing
+      Just rev -> return $ Just (Rev $ toJSString rev)
+  
+  getAllDocIds db = do
+    allIds <- U.getAllDocIds (show db)
+    return (map Doc allIds)
+  
+  getAttachment db docId attachment =
+    U.getAttachment (show db) (show docId) (show attachment)
+    
+  newView = U.newView
+  
+  queryView db viewSet view args = do
+    rows <- U.queryView (show db) (show viewSet) (show view) args
+    return $ map (\(doc,val) -> (Doc doc,val)) rows
+  
+  queryViewKeys db viewSet view args = do
+    rows <- U.queryViewKeys (show db) (show viewSet) (show view) args
+    return $ map (Doc . toJSString) rows
 

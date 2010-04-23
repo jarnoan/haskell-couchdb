@@ -54,6 +54,7 @@ instance MonadIO CouchMonad where
 
   liftIO m = CouchMonad $ \conn -> m >>= \a -> return (a,conn)
 
+
 makeURL :: String -- ^path
         -> [(String,String)]
         -> CouchMonad URI
